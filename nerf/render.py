@@ -15,6 +15,9 @@ from PIL import Image
 import load_ngp
 import pyngp as ngp # noqa
 
+# local imports
+from project import get_project_snapshot_name
+
 # constants
 DEFAULT_NGP_SCALE = 0.33
 DEFAULT_NGP_ORIGIN = np.array([0.5, 0.5, 0.5])
@@ -32,12 +35,12 @@ def nerf2ngp(
 def parse_args():
     parser = argparse.ArgumentParser(description="Render script")
 
-    parser.add_argument("--project", "-p", type=str, required=False, help="Path to NeRF project (jperl format).")
-
     # parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
     parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
-    parser.add_argument("--snapshot", required=True, type=str, help="Snapshot file (.msgpack) to use for rendering.")
+    parser.add_argument("--transforms", "-p", type=str, help="Path to NeRF-style transforms.json.")
+    parser.add_argument("--snapshots_path", type=str, help="Path to snapshots folder. Will be set automatically if not given.")
+    parser.add_argument("--snapshot", type=str, help="Path to a single snapshot (*.msgpack) file.  If given, this will override any n_steps data inside transforms.json")
 
     parser.add_argument("--frames_json", required=True, type=str, help="Path to a nerf-style transforms.json containing frames to render.")
     parser.add_argument("--frames_path", required=True, type=str, help="Path to a folder to save the rendered frames.")
@@ -101,12 +104,41 @@ def export_video_sequence(args: dict, render_data: dict):
     
     playlist_path.unlink(missing_ok=True)
 
+def generate_snapshots(args: dict, render_data: dict):
+    
+    if args.snapshot != None:
+        return
+    
+    print("Generating training snapshots...")
+
+    # figure out which steps we have to train
+    training_steps = []
+    if "n_steps" in render_data:
+        training_steps = [render_data["n_steps"]]
+    else:
+        try:
+            training_steps = [frame["n_steps"] for frame in render_data["frames"]]
+        except:
+            print("n_steps was not defined.  Either declare it at the root-level of transforms.json, or on a per-frame basis, or use the --snapshot argument.")
+            return
+    
+    # now train
+    str_steps = [str(step) for step in training_steps]
+    train_py_path = Path(os.path.realpath(__file__)).parent / "train.py"
+    snapshots_path = Path(args.snapshots_path).absolute()
+
+    train_cmd = ["python", str(train_py_path.absolute()), "--transforms", str(Path(args.transforms).absolute()), "--save", str(snapshots_path), "--steps", *str_steps]
+    train_proc = sp.Popen(train_cmd, env=os.environ, shell=True, stderr=sys.stderr, stdout=sys.stdout)
+    train_proc.wait()
+
 # render images
 def render_images(args: dict, render_data: dict):
     # initialize testbed
     testbed = ngp.Testbed(ngp.TestbedMode.Nerf)
-    testbed.load_snapshot(args.snapshot)
     testbed.shall_train = False
+    
+    if args.snapshot:
+        testbed.load_snapshot(args.snapshot)
     
     testbed.fov_axis = 0
     testbed.fov = math.degrees(render_data["camera_angle_x"])
@@ -149,6 +181,10 @@ def render_images(args: dict, render_data: dict):
         
         if "camera_angle_x" in frame:
             testbed.fov = math.degrees(frame["camera_angle_x"])
+        
+        if not args.snapshot and "n_steps" in frame:
+            snapshot_path = Path(args.snapshots_path) / get_project_snapshot_name(frame["n_steps"])
+            testbed.load_snapshot(str(snapshot_path.absolute()))
 
         # render the frame
         image = testbed.render(frame_width, frame_height, render_spp, True)
@@ -171,9 +207,9 @@ if __name__ == "__main__":
     render_data = {}
     with open(args.frames_json, 'r') as json_file:
         render_data = json.load(json_file)
-    
+
     if args.batch != None:
-        print("STARTING RENDER ON CUDA DEVICE: " + os.environ['CUDA_VISIBLE_DEVICES'])
+        print("Starting render on CUDA device: " + os.environ['CUDA_VISIBLE_DEVICES'])
 
         # only use a portion of the render_data["frames"]
         frames = render_data["frames"]
@@ -185,6 +221,9 @@ if __name__ == "__main__":
         
     # No --batch flag means we are part of the main process
     else:
+        # First, generate snapshots
+        generate_snapshots(args, render_data)
+
         # split into subprocesses, one for each gpu
         procs = []
         gpus = get_gpus()
@@ -207,7 +246,7 @@ if __name__ == "__main__":
             cmd = sys.argv.copy()
             cmd.insert(0, 'python')
             cmd.extend(["--batch", f"{i}/{n_gpus}"])
-            print(cmd)
+
             proc = sp.Popen(cmd, env=env, shell=True, stderr=sys.stderr, stdout=sys.stdout)
             procs.append(proc)
 

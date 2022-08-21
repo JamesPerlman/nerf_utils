@@ -288,8 +288,8 @@ def save_transforms(args):
             else:
                 print(f"Unhandled camera type \"{cam_type}\"")
             
-            cam.angle_x = math.atan(cam.w / (cam.fl_x * 2)) * 2
-            cam.angle_y = math.atan(cam.h / (cam.fl_y * 2)) * 2
+            cam.camera_angle_x = math.atan(cam.w / (cam.fl_x * 2)) * 2
+            cam.camera_angle_y = math.atan(cam.h / (cam.fl_y * 2)) * 2
 
 
     # Prepare to write frames json

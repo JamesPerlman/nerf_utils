@@ -120,7 +120,7 @@ def train(args: dict):
             print(f"Saving snapshot for step {current_step}: {snapshot_path}")
             
             if not snapshot_path.parent.exists():
-                snapshot_path.parent.mkdir()
+                snapshot_path.parent.mkdir(exist_ok=True, parents=True)
             
             testbed.save_snapshot(str(snapshot_path.absolute()), False)
 

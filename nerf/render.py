@@ -38,7 +38,7 @@ def parse_args():
     # parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
     parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
-    parser.add_argument("--transforms", "-p", type=str, help="Path to NeRF-style transforms.json.")
+    parser.add_argument("--transforms", type=str, help="Path to NeRF-style transforms.json.")
     parser.add_argument("--snapshots_path", type=str, help="Path to snapshots folder. Will be set automatically if not given.")
     parser.add_argument("--snapshot", type=str, help="Path to a single snapshot (*.msgpack) file.  If given, this will override any n_steps data inside transforms.json")
 
@@ -74,6 +74,8 @@ def export_video_sequence(args: dict, render_data: dict):
     print("Rendering output via ffmpeg...") 
 
     frame_paths = [get_frame_output_path(args, frame) for frame in render_data["frames"]]
+    frame_paths = [path for path in frame_paths if path.exists()]
+    
     video_path = Path(args.video_out)
     video_path.unlink(missing_ok=True)
     fps = args.video_fps
@@ -142,6 +144,8 @@ def render_images(args: dict, render_data: dict):
     
     testbed.fov_axis = 0
     testbed.fov = math.degrees(render_data["camera_angle_x"])
+    # testbed.background_color = [0.0, 1.0, 0.0, 1.0]
+
 
     # global render props
     frame_width = int(render_data["w"])
@@ -149,12 +153,11 @@ def render_images(args: dict, render_data: dict):
     render_spp = args.samples_per_pixel
 
     # prepare frames directory
-    Path(args.frames_path).mkdir(exist_ok=True)
+    Path(args.frames_path).mkdir(exist_ok=True, parents=True)
     rendered_frame_paths = []
 
     # render each frame via testbed
     for frame in render_data["frames"]:
-
         # prepare output_path
         output_path = get_frame_output_path(args, frame)
         rendered_frame_paths.append(output_path)
@@ -165,6 +168,12 @@ def render_images(args: dict, render_data: dict):
         if not args.overwrite_frames and output_path.exists():
             print(f"Frame already exists! Skipping...")
             continue
+            
+        if not args.snapshot and "n_steps" in frame:
+            n_steps = frame["n_steps"]
+            if int(n_steps) != testbed.training_step:
+                snapshot_path = Path(args.snapshots_path) / get_project_snapshot_name(n_steps)
+                testbed.load_snapshot(str(snapshot_path.absolute()))
         
         # get properties from the frame json
         cam_matrix = frame["transform_matrix"]
@@ -181,10 +190,6 @@ def render_images(args: dict, render_data: dict):
         
         if "camera_angle_x" in frame:
             testbed.fov = math.degrees(frame["camera_angle_x"])
-        
-        if not args.snapshot and "n_steps" in frame:
-            snapshot_path = Path(args.snapshots_path) / get_project_snapshot_name(frame["n_steps"])
-            testbed.load_snapshot(str(snapshot_path.absolute()))
 
         # render the frame
         image = testbed.render(frame_width, frame_height, render_spp, True)

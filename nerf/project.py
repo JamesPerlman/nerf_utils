@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# TODO: create Project class
 
 def get_project_snapshot_name(n_steps: int) -> str:
     return f"snapshot-{n_steps}.msgpack"

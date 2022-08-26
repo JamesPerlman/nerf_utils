@@ -57,5 +57,6 @@ def extract_frames(
                 mpdecimate, \
                 setpts=N/FRAME_RATE/TB \
             \" \
+            -start_number 0 \
             \"{str(output_image_format.absolute())}\" \
     ")

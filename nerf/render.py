@@ -198,7 +198,7 @@ def render_images(args: dict, render_data: dict):
         Image.fromarray((image * 255).astype(np.uint8)).convert('RGB').save(output_path.absolute())
 
 # convenience method to fetch gpu indices via `nvidia-smi`
-def get_gpus() -> list[int]:
+def get_gpus() -> list[str]:
     proc = sp.Popen(['nvidia-smi', '--list-gpus'], stdout=sp.PIPE, stderr=sp.PIPE)
     out, err = proc.communicate()
     data = [line.decode() for line in out.splitlines(False)]

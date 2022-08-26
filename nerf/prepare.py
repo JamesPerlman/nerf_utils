@@ -35,6 +35,8 @@ def parse_args() -> dict:
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
     parser.add_argument("--images_dir", type=str, default=None,
                         help="Directory for storing images")
+    parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
+                        help="Which COLMAP matcher to use (sequential or exhaustive)")
 
     return parser.parse_args()
 
@@ -82,6 +84,10 @@ def parse_project(args) -> dict:
     project.colmap_text_path.mkdir(exist_ok=True)
 
     project.transforms_json_path = project.path / "transforms.json"
+
+    project.done_path = project.path / "steps.done"
+    project.done_path.mkdir(exist_ok=True)
+
     return project
 
 
@@ -125,8 +131,7 @@ def run_ffmpeg(args):
     project = parse_project(args)
 
     # figure out if this step is done already
-    done_path = project.path / "steps.done"
-    ffmpeg_done_path = done_path / "step.ffmpeg.done"
+    ffmpeg_done_path = project.done_path / "step.ffmpeg.done"
 
     if ffmpeg_done_path.exists():
         print("ffmpeg step is already done! Skipping...")
@@ -174,12 +179,9 @@ def run_colmap(args):
 
     project = parse_project(args)
 
-    done_path = project.path / "steps.done"
-    done_path.mkdir(exist_ok=True)
-
     # TODO: Use Project class
 
-    colmap_feature_extractor_done_path = done_path / \
+    colmap_feature_extractor_done_path = project.done_path / \
         "step.colmap_feature_extractor.done"
     if not colmap_feature_extractor_done_path.exists():
         os_system(f"\
@@ -194,17 +196,17 @@ def run_colmap(args):
 
         os_system(f"touch {path2str(colmap_feature_extractor_done_path)}")
 
-    colmap_matcher_done_path = done_path / "step.colmap_matcher.done"
+    colmap_matcher_done_path = project.done_path / "step.colmap_matcher.done"
     if not colmap_matcher_done_path.exists():
         os_system(f"\
-            colmap sequential_matcher \
+            colmap {args.matcher}_matcher \
                 --SiftMatching.guided_matching=true \
                 --database_path {path2str(project.colmap_db_path)} \
         ")
 
         os_system(f"touch {path2str(colmap_matcher_done_path)}")
 
-    colmap_mapper_done_path = done_path / "step.colmap_mapper.done"
+    colmap_mapper_done_path = project.done_path / "step.colmap_mapper.done"
     if not colmap_mapper_done_path.exists():
         # TODO: research --Mapper.ba_global_use_pba
         os_system(f"\
@@ -216,7 +218,7 @@ def run_colmap(args):
 
         os_system(f"touch {path2str(colmap_mapper_done_path)}")
 
-    colmap_bundle_adjuster_done_path = done_path / "step.colmap_bundle_adjuster.done"
+    colmap_bundle_adjuster_done_path = project.done_path / "step.colmap_bundle_adjuster.done"
     if not colmap_bundle_adjuster_done_path.exists():
         os_system(f"\
             colmap bundle_adjuster \
@@ -227,7 +229,7 @@ def run_colmap(args):
 
         os_system(f"touch {path2str(colmap_bundle_adjuster_done_path)}")
 
-    colmap_model_orientation_aligner_done_path = done_path / \
+    colmap_model_orientation_aligner_done_path = project.done_path / \
         "step.colmap_model_orientation_aligner.done"
     if not colmap_model_orientation_aligner_done_path.exists():
         os_system(f"\
@@ -241,7 +243,7 @@ def run_colmap(args):
             f"touch {path2str(colmap_model_orientation_aligner_done_path)}")
 
     # TODO: Skip if already done
-    colmap_model_converter_done_path = done_path / "step.colmap_model_converter.done"
+    colmap_model_converter_done_path = project.done_path / "step.colmap_model_converter.done"
     if not colmap_model_converter_done_path.exists():
         os_system(f"\
             colmap model_converter \
@@ -324,12 +326,14 @@ def save_transforms(args):
                 R = qvec2rotmat(-qvec)
                 t = tvec.reshape([3,1])
                 m = np.concatenate([np.concatenate([R, t], 1), m3], 0)
-                c2w = np.linalg.inv(m)
+                c2w = np.matmul(np.linalg.inv(m), flip_mat)
 
                 out["frames"].append({
                     "file_path" : img_path_str,
                     # "sharpness" : get_image_sharpness(image_path_str),
-                    "transform_matrix" : np.matmul(c2w, flip_mat).tolist()
+                    "transform_matrix" : c2w.tolist(),
+                    "orientation": c2w[:3,:3].tolist(),
+                    "translation": c2w[:3,-1].tolist(),
                 })
 
                 print(f"Using image {img_path_str}...")

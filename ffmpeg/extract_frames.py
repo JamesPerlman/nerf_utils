@@ -7,8 +7,8 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str, required=True, help="Path to input video")
     parser.add_argument("--output", type=str, required=True, help="Path to output folder where frames will be generated")
     parser.add_argument("--skip", type=int, default=0, help="Only render out ever n frames")
-    parser.add_argument("--zeroes", type=int, default=6, help="Leading zeroes to prepend to frame names")
-
+    parser.add_argument("--zeroes", type=int, default=5, help="Leading zeroes to prepend to frame names")
+    parser.add_argument("--format", type=str, default="png", help="File format")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -24,5 +24,6 @@ if __name__ == "__main__":
         input_video_path=input_path,
         output_frames_path=output_path,
         skip_frames=args.skip,
-        leading_zeroes=args.zeroes
+        leading_zeroes=args.zeroes,
+        img_format=args.format
     )

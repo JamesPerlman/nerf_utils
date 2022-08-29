@@ -30,19 +30,15 @@ def parse_args() -> dict:
     parser = ArgumentParser()
 
     parser.add_argument("--input", type=str, required=True,
-                        help="A project folder, or a video path, or a folder containing an image sequence, or a folder containing a bunch of videos for batch processing.")
+                        help="Input folder for project")
     parser.add_argument("--max_frames", type=int, default=250,
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
-    parser.add_argument("--images_dir", type=str, default=None,
-                        help="Directory for storing images")
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
 
     return parser.parse_args()
 
 # Thank you https://stackoverflow.com/a/23689767/892990
-
-
 class dotdict(dict):
     """dot.notation access to dictionary attributes"""
     __getattr__ = dict.get
@@ -50,42 +46,45 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 # TODO: use Project Class
-
 def parse_project(args) -> dict:
     project = dotdict({})
 
-    input_path = Path(args.input)
+    project.path = Path(args.input)
+    project.images_path = project.path / "images"
+    project.colmap_db_path = project.path / "colmap.db"
+    project.colmap_sparse_path = project.path / "colmap_sparse"
+    project.colmap_text_path = project.path / "colmap_text"
+    project.transforms_json_path = project.path / "transforms.json"
+    project.done_path = project.path / "steps.done"
+    project.meta_dict_path = project.path / "meta.json"
 
     # Determine project.path and project.video_path
-    if input_path.is_dir():
-        project.path = input_path
-        project.video_path = project.path / "video.mov"
-        # TODO: if not video.mov exists try video.mp4
-    else:
-        project.path = input_path.parent
-        project.video_path = input_path
-        # TODO: make sure input_video_path is an actual video
+    if not project.path.is_dir():
+        print(f"Input path must be a directory.")
+        exit()
+        
+    # check for images
+    if not project.images_path.is_dir():
+        def vid_path(name: str) -> Path:
+            return project.path / name
+        
+        project.video_path = vid_path("video.mov")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            project.video_path = vid_path("video.mp4")
+            print(f"Trying {project.video_path}...")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            project.video_path = vid_path("videos")
+            print(f"Trying {project.video_path}...")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            print("Unable to find video source in this project.")
 
-    # Determine images path
+    # TODO: make sure input_video_path is an actual video
 
-    if args.images_dir is None:
-        # TODO: grab this from Project class
-        project.images_path = project.path / "images"
-    else:
-        project.images_path = Path(args.images_dir)
-    
-    
-    project.colmap_db_path = project.path / "colmap.db"
-
-    project.colmap_sparse_path = project.path / "colmap_sparse"
     project.colmap_sparse_path.mkdir(exist_ok=True)
-
-    project.colmap_text_path = project.path / "colmap_text"
     project.colmap_text_path.mkdir(exist_ok=True)
-
-    project.transforms_json_path = project.path / "transforms.json"
-
-    project.done_path = project.path / "steps.done"
     project.done_path.mkdir(exist_ok=True)
 
     return project
@@ -122,13 +121,11 @@ def get_image_sharpness(image_path):
 # FFMPEG step
 
 def run_ffmpeg(args):
-    input_path = Path(args.input)
-
-    if not input_path.exists():
-        print(f"Error! --input path \"{input_path}\" does not exist.")
-        exit()
-
+    
     project = parse_project(args)
+
+    if project.video_path is None:
+        return
 
     # figure out if this step is done already
     ffmpeg_done_path = project.done_path / "step.ffmpeg.done"
@@ -141,38 +138,75 @@ def run_ffmpeg(args):
     shutil.rmtree(project.images_path.absolute(), ignore_errors=True)
 
     project.images_path.mkdir(exist_ok=True, parents=True)
-    output_image_format = path2str(project.images_path / f"%04d.png")
 
-    # Determine which frames to extract
-    num_video_frames = get_frame_count(project.video_path)
+    def run_ffmpeg_on_video(video_path: Path, start_frame: int = 0) -> list[Path]:
+        img_ext = "png"
+        padding = 4
+        output_image_format = path2str(project.images_path / f"%0{padding}d.{img_ext}")
+        def img_path(i: int) -> Path:
+            filename = "{i:0{padding}d}.png".format(i=i + start_frame, padding=padding)
+            return f"./{Path(project.images_path / filename).as_posix()}"
 
-    if args.max_frames > num_video_frames:
-        print(
-            f"Error: You requested --max_frames={args.max_frames}, but this video only contains {num_video_frames} frames.")
-        exit()
+        # Determine which frames to extract
+        num_video_frames = get_frame_count(video_path)
+        
+        if args.max_frames > num_video_frames:
+            print(f"Error: You requested --max_frames={args.max_frames}, but this video only contains {num_video_frames} frames.  Using {num_video_frames} as the max.")
+            args.max_frames = num_video_frames
 
-    keep_indices = [int(i * (num_video_frames - 1) / (args.max_frames - 1))
-                        for i in range(args.max_frames)]
-    ffmpeg_select_str = "+".join([f"eq(n\,{i})" for i in keep_indices])
+        keep_indices = [int(i * (num_video_frames - 1) / (args.max_frames - 1)) for i in range(args.max_frames)]
+        ffmpeg_select_str = "+".join([f"eq(n\,{i})" for i in keep_indices])
 
-    # TODO: filter by sharpness level
+        # TODO: filter by sharpness level
 
-    # Run ffmpeg
-    os_system(f"\
-        ffmpeg \
-            -i {path2str(project.video_path)} \
-            -qscale:v 1 \
-            -qmin 1 \
-            -vf \"\
-                mpdecimate, \
-                setpts=N/FRAME_RATE/TB, \
-                select='{ffmpeg_select_str}'\
-            \" \
-            -vsync vfr \
-            {output_image_format} \
-    ")
+        # Run ffmpeg
+        os_system(f"\
+            ffmpeg \
+                -i {path2str(video_path)} \
+                -qscale:v 1 \
+                -qmin 1 \
+                -vf \"\
+                    mpdecimate, \
+                    setpts=N/FRAME_RATE/TB, \
+                    select='{ffmpeg_select_str}'\
+                \" \
+                -start_number {start_frame} \
+                -vsync vfr \
+                {output_image_format} \
+        ")
 
-    os_system(f"touch {path2str(ffmpeg_done_path)}")
+        return [img_path(i) for i in range(args.max_frames)]
+
+
+    def make_meta_dict(keys: list[Path], camera_id: int):
+        return {
+            str(keys[i]): {
+                "camera_id": camera_id,
+                "time_id": i,
+            } for i in range(len(keys))
+        }
+
+    meta_dict: dict = {}
+    # if video_path is a directory, we need to run this on multiple files
+    if project.video_path.is_dir():
+        # TODO: Make sure that all these files are videos
+        i = 0
+        for video_path in project.video_path.iterdir():
+            img_paths = run_ffmpeg_on_video(video_path, i * args.max_frames)
+            meta_dict = {
+                **meta_dict,
+                **make_meta_dict(keys=img_paths, camera_id=i)
+            }
+            i += 1
+
+    else:
+        img_paths = run_ffmpeg_on_video(project.video_path)
+        meta_dict = make_meta_dict(keys=img_paths, camera_id=0)
+    
+    with open(project.meta_dict_path, 'w+') as f:
+        json.dump(meta_dict, f, indent=2)
+    
+    os.system(f"touch {path2str(ffmpeg_done_path)}")
 
 
 def run_colmap(args):
@@ -275,7 +309,7 @@ def save_transforms(args):
             cam.h = float(field[3])
             cam.fl_x = float(field[4])
             cam.fl_y = float(field[4])
-            cam.k1 = k2 = p1 = p2 = 0
+            cam.k1 = cam.k2 = cam.p1 = cam.p2 = 0
             cam.cx = cam.w / 2
             cam.cy = cam.h / 2
             cam_type = field[1]
@@ -302,6 +336,11 @@ def save_transforms(args):
         [0, 0, -1, 0],
         [0, 0, 0, 1]
     ])
+
+    meta_dict: dict = None
+    if project.meta_dict_path.exists():
+        with open(project.meta_dict_path, 'r') as f:
+            meta_dict = json.load(f)
     
     with open(project.colmap_text_path / "images.txt", "r") as f:
         i = 0
@@ -332,8 +371,6 @@ def save_transforms(args):
                     "file_path" : img_path_str,
                     # "sharpness" : get_image_sharpness(image_path_str),
                     "transform_matrix" : c2w.tolist(),
-                    "orientation": c2w[:3,:3].tolist(),
-                    "translation": c2w[:3,-1].tolist(),
                 })
 
                 print(f"Using image {img_path_str}...")
@@ -341,7 +378,7 @@ def save_transforms(args):
     num_frames = len(out["frames"])
 
     print(f"Sorting transforms by image names...")
-    out["frames"] = sorted(out["frames"], key=lambda f: int(Path(f["file_path"]).stem))
+    out["frames"] = sorted(out["frames"], key=lambda f: Path(f["file_path"]).stem)
 
     print(f"Writing transforms ({num_frames} frames) to: {project.transforms_json_path.absolute()}")
     with open(str(project.transforms_json_path.absolute()), "w+") as outfile:

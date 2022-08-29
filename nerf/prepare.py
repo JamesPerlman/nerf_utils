@@ -56,7 +56,7 @@ def parse_project(args) -> dict:
     project.colmap_text_path = project.path / "colmap_text"
     project.transforms_json_path = project.path / "transforms.json"
     project.done_path = project.path / "steps.done"
-    project.meta_dict_path = project.path / "meta.json"
+    project.metadata_dict_path = project.path / "metadata.json"
 
     # Determine project.path and project.video_path
     if not project.path.is_dir():
@@ -178,7 +178,7 @@ def run_ffmpeg(args):
         return [img_path(i) for i in range(args.max_frames)]
 
 
-    def make_meta_dict(keys: list[Path], camera_id: int):
+    def make_metadata_dict(keys: list[Path], camera_id: int):
         return {
             str(keys[i]): {
                 "camera_id": camera_id,
@@ -186,25 +186,25 @@ def run_ffmpeg(args):
             } for i in range(len(keys))
         }
 
-    meta_dict: dict = {}
+    metadata_dict: dict = {}
     # if video_path is a directory, we need to run this on multiple files
     if project.video_path.is_dir():
         # TODO: Make sure that all these files are videos
         i = 0
         for video_path in project.video_path.iterdir():
             img_paths = run_ffmpeg_on_video(video_path, i * args.max_frames)
-            meta_dict = {
-                **meta_dict,
-                **make_meta_dict(keys=img_paths, camera_id=i)
+            metadata_dict = {
+                **metadata_dict,
+                **make_metadata_dict(keys=img_paths, camera_id=i)
             }
             i += 1
 
     else:
         img_paths = run_ffmpeg_on_video(project.video_path)
-        meta_dict = make_meta_dict(keys=img_paths, camera_id=0)
+        metadata_dict = make_metadata_dict(keys=img_paths, camera_id=0)
     
-    with open(project.meta_dict_path, 'w+') as f:
-        json.dump(meta_dict, f, indent=2)
+    with open(project.metadata_dict_path, 'w+') as f:
+        json.dump(metadata_dict, f, indent=2)
     
     os.system(f"touch {path2str(ffmpeg_done_path)}")
 
@@ -337,10 +337,10 @@ def save_transforms(args):
         [0, 0, 0, 1]
     ])
 
-    meta_dict: dict = None
-    if project.meta_dict_path.exists():
-        with open(project.meta_dict_path, 'r') as f:
-            meta_dict = json.load(f)
+    metadata_dict: dict = None
+    if project.metadata_dict_path.exists():
+        with open(project.metadata_dict_path, 'r') as f:
+            metadata_dict = json.load(f)
     
     with open(project.colmap_text_path / "images.txt", "r") as f:
         i = 0
@@ -359,6 +359,9 @@ def save_transforms(args):
             if  i % 2 == 1:
                 fields = line.split(" ")
                 img_path_str = f"./{project.images_path.name}/{fields[9]}"
+                
+                if not Path(img_path_str).exists():
+                    continue
 
                 qvec = np.array(tuple(map(float, fields[1:5])))
                 tvec = np.array(tuple(map(float, fields[5:8])))

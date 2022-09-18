@@ -35,7 +35,7 @@ def nerf2ngp(
 def parse_args():
     parser = argparse.ArgumentParser(description="Render script")
 
-    # parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
+    parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
     parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
     parser.add_argument("--transforms", type=str, help="Path to NeRF-style transforms.json.")
@@ -198,11 +198,14 @@ def render_images(args: dict, render_data: dict):
         Image.fromarray((image * 255).astype(np.uint8)).convert('RGB').save(output_path.absolute())
 
 # convenience method to fetch gpu indices via `nvidia-smi`
-def get_gpus() -> list[str]:
+def get_gpus(args: dict) -> list[str]:
     proc = sp.Popen(['nvidia-smi', '--list-gpus'], stdout=sp.PIPE, stderr=sp.PIPE)
     out, err = proc.communicate()
     data = [line.decode() for line in out.splitlines(False)]
     gpus = [f"{item[4:item.index(':')]}" for item in data]
+    if args.gpus:
+        gpus = [id for id in gpus if id in args.gpus]
+
     return gpus
 
 # main

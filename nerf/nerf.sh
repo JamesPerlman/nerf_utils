@@ -1,8 +1,8 @@
 THIS_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-CONDA_CMDS="prepare|train|render|reorient"
+CONDA_CMDS="prepare|train|render|reorient|preview"
 
-OTHER_CMDS="-"
+OTHER_CMDS="rename_images|cull_frames"
 
 # thank you https://unix.stackexchange.com/a/111518
 if [[ "$1" =~ ^($CONDA_CMDS)$ ]]; then

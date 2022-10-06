@@ -35,6 +35,8 @@ def parse_args() -> dict:
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
+    parser.add_argument("--max_features", type=int, default=8192,
+                        help="Maximum number of features to extract per image. Default=8192.")
 
     return parser.parse_args()
 
@@ -224,6 +226,7 @@ def run_colmap(args):
                 --ImageReader.single_camera 1 \
                 --SiftExtraction.estimate_affine_shape=true \
                 --SiftExtraction.domain_size_pooling=true \
+                --SiftExtraction.max_num_features={args.max_features} \
                 --database_path {path2str(project.colmap_db_path)} \
                 --image_path {path2str(project.images_path)} \
         ")
@@ -237,6 +240,7 @@ def run_colmap(args):
                 --SiftMatching.guided_matching=true \
                 --database_path {path2str(project.colmap_db_path)} \
         ")
+        # {args.matcher == 'sequential' and '--SequentialMatching.loop_detection=1' or ''} \
 
         os_system(f"touch {path2str(colmap_matcher_done_path)}")
 
@@ -326,6 +330,8 @@ def save_transforms(args):
             
             cam.camera_angle_x = math.atan(cam.w / (cam.fl_x * 2)) * 2
             cam.camera_angle_y = math.atan(cam.h / (cam.fl_y * 2)) * 2
+
+            break
 
 
     # Prepare to write frames json

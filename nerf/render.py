@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
         # split into subprocesses, one for each gpu
         procs = []
-        gpus = get_gpus()
+        gpus = get_gpus(args)
         n_gpus = len(gpus)
 
         # In case there are less images to render than the number of gpus available...

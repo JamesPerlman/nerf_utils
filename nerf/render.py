@@ -144,7 +144,7 @@ def render_images(args: dict, render_data: dict):
     
     testbed.fov_axis = 0
     testbed.fov = math.degrees(render_data["camera_angle_x"])
-    # testbed.background_color = [0.0, 1.0, 0.0, 1.0]
+    # testbed.background_color = [1.0, 1.0, 1.0, 1.0]
 
 
     # global render props
@@ -190,6 +190,13 @@ def render_images(args: dict, render_data: dict):
         
         if "camera_angle_x" in frame:
             testbed.fov = math.degrees(frame["camera_angle_x"])
+        
+        if "aperture" in frame:
+            testbed.dof = frame["aperture"]
+        
+        if "focus_target" in frame:
+            testbed.autofocus_target = nerf2ngp(np.array(frame["focus_target"]))
+            testbed.autofocus = True
 
         # render the frame
         image = testbed.render(frame_width, frame_height, render_spp, True)

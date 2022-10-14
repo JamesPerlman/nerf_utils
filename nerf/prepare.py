@@ -12,8 +12,6 @@ from argparse import ArgumentParser
 # get ffmpeg utils
 sys.path.append(str(Path(__file__).parent / "../ffmpeg"))
 
-from ffmpeg import get_frame_count
-
 
 # Potentially, we can log out the commands we've already done
 # if the command has already been run once before, then we can safely skip it
@@ -37,6 +35,7 @@ def parse_args() -> dict:
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
     parser.add_argument("--max_features", type=int, default=8192,
                         help="Maximum number of features to extract per image. Default=8192.")
+    parser.add_argument("--max_matches", type=int, default=32768)
 
     return parser.parse_args()
 
@@ -53,12 +52,15 @@ def parse_project(args) -> dict:
 
     project.path = Path(args.input)
     project.images_path = project.path / "images"
+    project.masks_path = project.path / "masks"
     project.colmap_db_path = project.path / "colmap.db"
     project.colmap_sparse_path = project.path / "colmap_sparse"
     project.colmap_text_path = project.path / "colmap_text"
     project.transforms_json_path = project.path / "transforms.json"
     project.done_path = project.path / "steps.done"
     project.metadata_dict_path = project.path / "metadata.json"
+
+    project.use_masks = project.masks_path.exists()
 
     # Determine project.path and project.video_path
     if not project.path.is_dir():
@@ -120,9 +122,9 @@ def get_image_sharpness(image_path):
     variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
     return variance_of_laplacian
 
-# FFMPEG step
+# extract frames step
 
-def run_ffmpeg(args):
+def extract_frames(args):
     
     project = parse_project(args)
 
@@ -130,10 +132,10 @@ def run_ffmpeg(args):
         return
 
     # figure out if this step is done already
-    ffmpeg_done_path = project.done_path / "step.ffmpeg.done"
+    extract_frames_done_path = project.done_path / "step.extract_frames.done"
 
-    if ffmpeg_done_path.exists():
-        print("ffmpeg step is already done! Skipping...")
+    if extract_frames_done_path.exists():
+        print("extract frames step is already done! Skipping...")
         return
 
     # TODO: Better conditions for deletion
@@ -141,43 +143,46 @@ def run_ffmpeg(args):
 
     project.images_path.mkdir(exist_ok=True, parents=True)
 
-    def run_ffmpeg_on_video(video_path: Path, start_frame: int = 0) -> list[Path]:
+    def extract_frames_from_video(video_path: Path, start_frame: int = 0) -> list[Path]:
+        cap = cv2.VideoCapture(project.video_path.as_posix())
+
         img_ext = "png"
         padding = 4
-        output_image_format = path2str(project.images_path / f"%0{padding}d.{img_ext}")
+        
         def img_path(i: int) -> Path:
-            filename = "{i:0{padding}d}.png".format(i=i + start_frame, padding=padding)
+            filename = "{i:0{padding}d}.{img_ext}".format(i=i + start_frame, padding=padding, img_ext=img_ext)
             return f"./{Path(project.images_path / filename).as_posix()}"
 
         # Determine which frames to extract
-        num_video_frames = get_frame_count(video_path)
+        num_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         if args.max_frames > num_video_frames:
             print(f"Error: You requested --max_frames={args.max_frames}, but this video only contains {num_video_frames} frames.  Using {num_video_frames} as the max.")
             args.max_frames = num_video_frames
 
         keep_indices = [int(i * (num_video_frames - 1) / (args.max_frames - 1)) for i in range(args.max_frames)]
-        ffmpeg_select_str = "+".join([f"eq(n\,{i})" for i in keep_indices])
 
         # TODO: filter by sharpness level
+        # thank you https://vuamitom.github.io/2019/12/13/fast-iterate-through-video-frames.html
+        success = cap.grab() # get the next frame       
+        f = 0
+        i = 0
+        all_img_paths = []
 
-        # Run ffmpeg
-        os_system(f"\
-            ffmpeg \
-                -i {path2str(video_path)} \
-                -qscale:v 1 \
-                -qmin 1 \
-                -vf \"\
-                    mpdecimate, \
-                    setpts=N/FRAME_RATE/TB, \
-                    select='{ffmpeg_select_str}'\
-                \" \
-                -start_number {start_frame} \
-                -vsync vfr \
-                {output_image_format} \
-        ")
+        while success:
+            if f in keep_indices:
+                _, img = cap.retrieve()
+                this_img_path = img_path(i)
+                print(f"Extracting frame {i} of {args.max_frames} ({f} / {num_video_frames}): {this_img_path}...")
+                cv2.imwrite(this_img_path, img)
+                all_img_paths.append(this_img_path)
+                i += 1
+            
+            # read next frame
+            success = cap.grab()	
+            f += 1
 
-        return [img_path(i) for i in range(args.max_frames)]
+        return all_img_paths
 
 
     def make_metadata_dict(keys: list[Path], camera_id: int):
@@ -194,7 +199,7 @@ def run_ffmpeg(args):
         # TODO: Make sure that all these files are videos
         i = 0
         for video_path in project.video_path.iterdir():
-            img_paths = run_ffmpeg_on_video(video_path, i * args.max_frames)
+            img_paths = extract_frames_from_video(video_path, i * args.max_frames)
             metadata_dict = {
                 **metadata_dict,
                 **make_metadata_dict(keys=img_paths, camera_id=i)
@@ -202,13 +207,13 @@ def run_ffmpeg(args):
             i += 1
 
     else:
-        img_paths = run_ffmpeg_on_video(project.video_path)
+        img_paths = extract_frames_from_video(project.video_path)
         metadata_dict = make_metadata_dict(keys=img_paths, camera_id=0)
     
     with open(project.metadata_dict_path, 'w+') as f:
         json.dump(metadata_dict, f, indent=2)
     
-    os.system(f"touch {path2str(ffmpeg_done_path)}")
+    os.system(f"touch {path2str(extract_frames_done_path)}")
 
 
 def run_colmap(args):
@@ -224,6 +229,7 @@ def run_colmap(args):
             colmap feature_extractor \
                 --ImageReader.camera_model OPENCV \
                 --ImageReader.single_camera 1 \
+                {f'--ImageReader.mask_path {path2str(project.masks_path)}' if project.use_masks else ''} \
                 --SiftExtraction.estimate_affine_shape=true \
                 --SiftExtraction.domain_size_pooling=true \
                 --SiftExtraction.max_num_features={args.max_features} \
@@ -238,6 +244,7 @@ def run_colmap(args):
         os_system(f"\
             colmap {args.matcher}_matcher \
                 --SiftMatching.guided_matching=true \
+                {f'--SiftMatching.max_num_matches {args.max_matches}' if args.max_matches is not None else ''} \
                 --database_path {path2str(project.colmap_db_path)} \
         ")
         # {args.matcher == 'sequential' and '--SequentialMatching.loop_detection=1' or ''} \
@@ -396,7 +403,7 @@ def save_transforms(args):
 if __name__ == "__main__":
     args = parse_args()
 
-    run_ffmpeg(args)
+    extract_frames(args)
 
     run_colmap(args)
 

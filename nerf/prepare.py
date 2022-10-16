@@ -33,7 +33,7 @@ def parse_args() -> dict:
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
-    parser.add_argument("--max_features", type=int, default=8192,
+    parser.add_argument("--max_features", type=int, default=16384,
                         help="Maximum number of features to extract per image. Default=8192.")
     parser.add_argument("--max_matches", type=int, default=32768)
 
@@ -46,11 +46,22 @@ class dotdict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
+VIDEO_EXTENSIONS = [".mov", ".mp4", ".avi", ".mkv"]
+
 # TODO: use Project Class
 def parse_project(args) -> dict:
     project = dotdict({})
 
     project.path = Path(args.input)
+    
+    # Determine project.path and project.video_path
+    if not project.path.is_dir():
+        if project.path.suffix.lower() in VIDEO_EXTENSIONS:
+            project.video_path = project.path
+            project.path = project.path.parent
+        else:
+            raise Exception("Input must be a folder or a video file")
+    
     project.images_path = project.path / "images"
     project.masks_path = project.path / "masks"
     project.colmap_db_path = project.path / "colmap.db"
@@ -61,18 +72,15 @@ def parse_project(args) -> dict:
     project.metadata_dict_path = project.path / "metadata.json"
 
     project.use_masks = project.masks_path.exists()
-
-    # Determine project.path and project.video_path
-    if not project.path.is_dir():
-        print(f"Input path must be a directory.")
-        exit()
         
     # check for images
     if not project.images_path.is_dir():
         def vid_path(name: str) -> Path:
             return project.path / name
         
-        project.video_path = vid_path("video.mov")
+        if project.video_path is None:
+            project.video_path = vid_path("video.mov")
+        
         if not project.video_path.exists():
             print(f"Video path \"{project.video_path}\" not found...")
             project.video_path = vid_path("video.mp4")

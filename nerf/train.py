@@ -1,7 +1,10 @@
+import json
 import os
 
 from argparse import ArgumentParser
 from pathlib import Path
+import time
+from tqdm import tqdm
 
 # pyngp
 import load_ngp
@@ -12,6 +15,7 @@ from project import get_project_snapshot_name, get_project_snapshot_path
 
 NGP_DIR = Path(os.environ['NGP_DIR'])
 NETWORK_CONFIG_PATH = NGP_DIR / "configs" / "nerf" / "base.json"
+NGP_SCALE = 0.33
 
 def parse_args():
     parser = ArgumentParser()
@@ -20,7 +24,6 @@ def parse_args():
     parser.add_argument("--steps", nargs="+", type=int, required=True, help="Number of steps to train (can be a list).")
     parser.add_argument("--load", type=str, required=False, help="Initial snapshot to load.")
     parser.add_argument("--save", type=str, required=False, help="Either a path to the desired output file, or a folder (if training multiple levels).  Will be auto-generated if not given.")
-
     args = parser.parse_args()
 
     return args
@@ -52,16 +55,25 @@ def is_step_complete(args: dict, n_steps: int) -> bool:
     snapshot_path = get_snapshot_path(args, n_steps)
     return snapshot_path.exists()
 
+def parse_transforms(transforms_path: Path) -> dict:
+    with open(transforms_path, "r") as f:
+        return json.load(f)
+
 # prepare training snapshots
 def train(args: dict):
+    transforms = parse_transforms(Path(args.transforms))
+
     testbed = ngp.Testbed(ngp.TestbedMode.Nerf)
     testbed.load_training_data(str(Path(args.transforms).absolute()))
     testbed.shall_train = True
     testbed.reload_network_from_file(str(NETWORK_CONFIG_PATH.absolute()))
+    testbed.nerf.training.near_distance = max(frame["near"] for frame in transforms["frames"]) * NGP_SCALE
+    testbed.nerf.training.optimize_exposure = True
 
     # eliminate duplicates
     training_steps = [*set(args.steps)]
-    print(training_steps)
+    print(f"Training up to these levels: {training_steps}")
+    print(f"Using near value {testbed.nerf.training.near_distance}")
 
     # sort ascending
     training_steps = sorted(training_steps)
@@ -107,26 +119,44 @@ def train(args: dict):
         is_testbed_ready = True
 
     # start up training loops
-    while testbed.frame():
-        current_step = testbed.training_step
+    tqdm_last_update = 0
+    previous_step = testbed.training_step
+    with tqdm(desc="Training", total=max(args.steps), unit="step") as t:
+        while testbed.frame():
+            current_step = testbed.training_step
+            
+            # update progress bar
+
+            if current_step < previous_step or previous_step == 0:
+                previous_step = 0
+                t.reset()
+            
+            now = time.monotonic()
+            if now - tqdm_last_update > 0.1:
+                t.update(current_step - previous_step)
+                t.set_postfix(loss=testbed.loss)
+                previous_step = current_step
+                tqdm_last_update = now
+            
+            # save checkpoint
+            if current_step in training_steps:
+                snapshot_path = get_snapshot_path(args, current_step)
+                
+                if snapshot_path.exists():
+                    continue
+
+                print(f"Saving snapshot for step {current_step}: {snapshot_path}")
+                
+                if not snapshot_path.parent.exists():
+                    snapshot_path.parent.mkdir(exist_ok=True, parents=True)
+                
+                testbed.save_snapshot(str(snapshot_path.absolute()), False)
+
         
-        # save checkpoint
-        if current_step in training_steps:
-            snapshot_path = get_snapshot_path(args, current_step)
+            # break when training is done
+            if testbed.training_step >= max_step:
+                break
             
-            if snapshot_path.exists():
-                continue
-
-            print(f"Saving snapshot for step {current_step}: {snapshot_path}")
-            
-            if not snapshot_path.parent.exists():
-                snapshot_path.parent.mkdir(exist_ok=True, parents=True)
-            
-            testbed.save_snapshot(str(snapshot_path.absolute()), False)
-
-        # break when training is done
-        if testbed.training_step >= max_step:
-            break
 
 
 if __name__ == "__main__":

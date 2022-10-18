@@ -34,8 +34,11 @@ def parse_args() -> dict:
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
     parser.add_argument("--max_features", type=int, default=16384,
-                        help="Maximum number of features to extract per image. Default=8192.")
-    parser.add_argument("--max_matches", type=int, default=32768)
+                        help="Maximum number of features to extract per image. Default=16384.")
+    parser.add_argument("--max_matches", type=int, default=32768,
+                        help="Maximum number of matches to extract per image pair. Default=32768.")
+    parser.add_argument("--extract_only", action="store_true",
+                        help="Only extract frames from video, do not run COLMAP.")
 
     return parser.parse_args()
 
@@ -410,9 +413,11 @@ def save_transforms(args):
 
 if __name__ == "__main__":
     args = parse_args()
-
     extract_frames(args)
 
+    if args.extract_only:
+        exit(0)
+    
     run_colmap(args)
 
     save_transforms(args)

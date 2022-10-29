@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--steps", nargs="+", type=int, required=True, help="Number of steps to train (can be a list).")
     parser.add_argument("--load", type=str, required=False, help="Initial snapshot to load.")
     parser.add_argument("--save", type=str, required=False, help="Either a path to the desired output file, or a folder (if training multiple levels).  Will be auto-generated if not given.")
+    parser.add_argument("--batch_size", type=int, default=4194304, help="NeRF training batch size.")
     args = parser.parse_args()
 
     return args
@@ -67,8 +68,13 @@ def train(args: dict):
     testbed.load_training_data(str(Path(args.transforms).absolute()))
     testbed.shall_train = True
     testbed.reload_network_from_file(str(NETWORK_CONFIG_PATH.absolute()))
-    testbed.nerf.training.near_distance = max(frame["near"] for frame in transforms["frames"]) * NGP_SCALE
+    testbed.nerf.training.near_distance = min(frame["near"] for frame in transforms["frames"]) * NGP_SCALE
     testbed.nerf.training.optimize_exposure = True
+    testbed.training_batch_size = args.batch_size
+    # testbed.nerf.training.optimize_extrinsics = True
+    # testbed.nerf.training.optimize_extra_dims = True
+    # testbed.nerf.training.optimize_focal_length = True
+    # testbed.nerf.training.optimize_distortion = True
 
     # eliminate duplicates
     training_steps = [*set(args.steps)]

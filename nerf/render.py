@@ -143,8 +143,7 @@ def render_images(args: dict, render_data: dict):
         testbed.load_snapshot(args.snapshot)
     
     testbed.fov_axis = 0
-    testbed.fov = math.degrees(render_data["camera_angle_x"])
-    # testbed.background_color = [1.0, 1.0, 1.0, 1.0]
+    testbed.background_color = [0.0, 0.0, 0.0, 1.0]
 
 
     # global render props
@@ -174,12 +173,8 @@ def render_images(args: dict, render_data: dict):
             if int(n_steps) != testbed.training_step:
                 snapshot_path = Path(args.snapshots_path) / get_project_snapshot_name(n_steps)
                 testbed.load_snapshot(str(snapshot_path.absolute()))
-        
-        # get properties from the frame json
-        cam_matrix = frame["transform_matrix"]
 
         # prepare testbed to render this frame
-        testbed.set_nerf_camera_matrix(np.matrix(cam_matrix)[:-1,:])
         
         if "aabb" in frame:
             aabb = frame["aabb"]
@@ -188,8 +183,47 @@ def render_images(args: dict, render_data: dict):
 
             testbed.render_aabb = ngp.BoundingBox(nerf2ngp(aabb_min), nerf2ngp(aabb_max))
         
-        if "camera_angle_x" in frame:
-            testbed.fov = math.degrees(frame["camera_angle_x"])
+        if "camera" in frame:
+            camera = frame["camera"]
+            type = camera["type"]
+
+            if type == "perspective":
+                testbed.render_camera_model = ngp.CameraModel.Perspective
+                testbed.fov = math.degrees(camera["fov"])
+            elif type == "spherical_quadrilateral":
+                testbed.render_camera_model = ngp.CameraModel.SphericalQuadrilateral
+                # TODO: Figure out why we have to pass negative curvature here
+                testbed.camera_spherical_quadrilateral = ngp.SphericalQuadrilateralConfig(
+                    width=camera["sw"] * DEFAULT_NGP_SCALE,
+                    height=camera["sh"] * DEFAULT_NGP_SCALE,
+                    curvature=-camera["c"],
+                )
+            elif type == "quadrilateral_hexahedron":
+                testbed.render_camera_model = ngp.CameraModel.QuadrilateralHexahedron
+
+                [fsw, fsh] = DEFAULT_NGP_SCALE * np.array(camera["fs"])
+                [bsw, bsh] = DEFAULT_NGP_SCALE * np.array(camera["bs"])
+                sl = DEFAULT_NGP_SCALE * camera["sl"]
+                testbed.camera_quadrilateral_hexahedron = ngp.QuadrilateralHexahedronConfig(
+                    front=ngp.Quadrilateral3D(
+                        tl=np.array(0.5 * np.array([-fsw, -fsh, sl])),
+                        tr=np.array(0.5 * np.array([fsw, -fsh, sl])),
+                        bl=np.array(0.5 * np.array([-fsw, fsh, sl])),
+                        br=np.array(0.5 * np.array([fsw, fsh, sl])),
+                    ), 
+                    back=ngp.Quadrilateral3D(
+                        tl=np.array(0.5 * np.array([-bsw, -bsh, -sl])),
+                        tr=np.array(0.5 * np.array([bsw, -bsh, -sl])),
+                        bl=np.array(0.5 * np.array([-bsw, bsh, -sl])),
+                        br=np.array(0.5 * np.array([bsw, bsh, -sl])),
+                    ),
+                )
+            else:
+                raise Exception(f"Unknown camera type: {type}")
+            
+            testbed.render_near_distance = camera["near"] * DEFAULT_NGP_SCALE
+            testbed.set_nerf_camera_matrix(np.matrix(camera["m"])[:-1,:])
+            
         
         if "aperture" in frame:
             testbed.dof = frame["aperture"]
@@ -202,7 +236,7 @@ def render_images(args: dict, render_data: dict):
         image = testbed.render(frame_width, frame_height, render_spp, True)
 
         # save frame as image
-        Image.fromarray((image * 255).astype(np.uint8)).convert('RGB').save(output_path.absolute())
+        Image.fromarray((image * 255).astype(np.uint8)).convert('RGBA').save(output_path.absolute())
 
 # convenience method to fetch gpu indices via `nvidia-smi`
 def get_gpus(args: dict) -> list[str]:

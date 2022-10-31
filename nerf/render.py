@@ -22,15 +22,6 @@ from project import get_project_snapshot_name
 DEFAULT_NGP_SCALE = 0.33
 DEFAULT_NGP_ORIGIN = np.array([0.5, 0.5, 0.5])
 
-# convenience method to convert NeRF coordinates to NGP
-def nerf2ngp(
-        xyz: np.array,
-        origin = DEFAULT_NGP_ORIGIN,
-        scale = DEFAULT_NGP_SCALE
-    ) -> np.array:
-    xyz_cycled = np.array([xyz[1], xyz[2], xyz[0]])
-    return scale * xyz_cycled + origin
-
 # convenience method to parse arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Render script")
@@ -133,6 +124,54 @@ def generate_snapshots(args: dict, render_data: dict):
     train_proc = sp.Popen(train_cmd, env=os.environ, shell=True, stderr=sys.stderr, stdout=sys.stdout)
     train_proc.wait()
 
+# ngp math utils
+
+def nerf_matrix_to_ngp(nerf_matrix: np.matrix) -> np.matrix:
+    result = nerf_matrix
+    result[:, 0:3] *= DEFAULT_NGP_SCALE
+    result[:3, 3] = result[:3, 3] * DEFAULT_NGP_SCALE + DEFAULT_NGP_ORIGIN.reshape(3, 1)
+
+    # Cycle axes xyz<-yzx
+    result[:3, :] = np.roll(result[:3, :], -1, axis=0)
+
+    return result
+
+
+# convenience method to convert NeRF point to NGP
+def nerf2ngp(
+        xyz: np.array,
+        origin = DEFAULT_NGP_ORIGIN,
+        scale = DEFAULT_NGP_SCALE
+    ) -> np.array:
+    xyz_cycled = np.array([xyz[1], xyz[2], xyz[0]])
+    return scale * xyz_cycled + origin
+
+
+# deserializers
+
+NGP_MASK_MODES = {
+    "add": ngp.MaskMode.Add,
+    "subtract": ngp.MaskMode.Subtract,
+}
+
+NGP_MASK_SHAPES = {
+    "box": ngp.MaskShape.Box,
+    "cylinder": ngp.MaskShape.Cylinder,
+    "sphere": ngp.MaskShape.Sphere,
+}
+
+def deserialize_mask(mask: dict) -> list:
+    if "mode" not in mask or "shape" not in mask:
+        return None
+    
+    mode = NGP_MASK_MODES[mask["mode"]]
+    shape = NGP_MASK_SHAPES[mask["shape"]]
+    transform = nerf_matrix_to_ngp(np.matrix(mask["transform"]))
+    opacity = mask["opacity"]
+    feather = mask["feather"]
+
+    return ngp.Mask3D(mode, shape, transform, feather, opacity)
+
 # render images
 def render_images(args: dict, render_data: dict):
     # initialize testbed
@@ -223,7 +262,9 @@ def render_images(args: dict, render_data: dict):
             
             testbed.render_near_distance = camera["near"] * DEFAULT_NGP_SCALE
             testbed.set_nerf_camera_matrix(np.matrix(camera["m"])[:-1,:])
-            
+        
+        if "masks" in frame:
+            testbed.render_masks = [deserialize_mask(mask) for mask in frame["masks"]]
         
         if "aperture" in frame:
             testbed.dof = frame["aperture"]

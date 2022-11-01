@@ -127,7 +127,7 @@ def generate_snapshots(args: dict, render_data: dict):
 # ngp math utils
 
 def nerf_matrix_to_ngp(nerf_matrix: np.matrix) -> np.matrix:
-    result = nerf_matrix
+    result = np.matrix(nerf_matrix)
     result[:, 0:3] *= DEFAULT_NGP_SCALE
     result[:3, 3] = result[:3, 3] * DEFAULT_NGP_SCALE + DEFAULT_NGP_ORIGIN.reshape(3, 1)
 
@@ -174,7 +174,7 @@ def deserialize_mask(mask: dict) -> list:
     elif shape == "sphere":
         r = mask["radius"]
         return ngp.Mask3D.Sphere(r, transform, mode, feather, opacity)
-
+        
     print(f"Warning: Unknown mask shape detected: {shape}")
     return None
 

@@ -154,23 +154,29 @@ NGP_MASK_MODES = {
     "subtract": ngp.MaskMode.Subtract,
 }
 
-NGP_MASK_SHAPES = {
-    "box": ngp.MaskShape.Box,
-    "cylinder": ngp.MaskShape.Cylinder,
-    "sphere": ngp.MaskShape.Sphere,
-}
-
 def deserialize_mask(mask: dict) -> list:
     if "mode" not in mask or "shape" not in mask:
         return None
     
     mode = NGP_MASK_MODES[mask["mode"]]
-    shape = NGP_MASK_SHAPES[mask["shape"]]
     transform = nerf_matrix_to_ngp(np.matrix(mask["transform"]))
     opacity = mask["opacity"]
     feather = mask["feather"]
+    shape = mask["shape"]
 
-    return ngp.Mask3D(mode, shape, transform, feather, opacity)
+    if shape == "box":
+        dims = np.array(mask["dims"])
+        return ngp.Mask3D.Box(dims, transform, mode, feather, opacity)
+    elif shape == "cylinder":
+        r = mask["radius"]
+        h = mask["height"]
+        return ngp.Mask3D.Cylinder(r, h, transform, mode, feather, opacity)
+    elif shape == "sphere":
+        r = mask["radius"]
+        return ngp.Mask3D.Sphere(r, transform, mode, feather, opacity)
+
+    print(f"Warning: Unknown mask shape detected: {shape}")
+    return None
 
 # render images
 def render_images(args: dict, render_data: dict):
@@ -182,7 +188,7 @@ def render_images(args: dict, render_data: dict):
         testbed.load_snapshot(args.snapshot)
     
     testbed.fov_axis = 0
-    testbed.background_color = [0.0, 0.0, 0.0, 1.0]
+    testbed.background_color = [0.0, 0.0, 0.0, 0.0]
 
 
     # global render props
@@ -260,18 +266,19 @@ def render_images(args: dict, render_data: dict):
             else:
                 raise Exception(f"Unknown camera type: {type}")
             
+        
+            if "aperture" in camera:
+                testbed.dof = camera["aperture"]
+            
+            if "focus_target" in camera:
+                testbed.autofocus_target = nerf2ngp(np.array(camera["focus_target"]))
+                testbed.autofocus = True
+            
             testbed.render_near_distance = camera["near"] * DEFAULT_NGP_SCALE
             testbed.set_nerf_camera_matrix(np.matrix(camera["m"])[:-1,:])
         
         if "masks" in frame:
             testbed.render_masks = [deserialize_mask(mask) for mask in frame["masks"]]
-        
-        if "aperture" in frame:
-            testbed.dof = frame["aperture"]
-        
-        if "focus_target" in frame:
-            testbed.autofocus_target = nerf2ngp(np.array(frame["focus_target"]))
-            testbed.autofocus = True
 
         # render the frame
         image = testbed.render(frame_width, frame_height, render_spp, True)

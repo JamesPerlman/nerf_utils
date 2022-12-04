@@ -19,8 +19,8 @@ import pyngp as ngp # noqa
 from project import get_project_snapshot_name
 
 # constants
-DEFAULT_NGP_SCALE = 0.33
-DEFAULT_NGP_ORIGIN = np.array([0.5, 0.5, 0.5])
+DEFAULT_NGP_SCALE = 1.0 # 0.33
+DEFAULT_NGP_ORIGIN = np.array([0.0, 0.0, 0.0]) # np.array([0.5, 0.5, 0.5])
 
 # convenience method to parse arguments
 def parse_args():
@@ -29,15 +29,11 @@ def parse_args():
     parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
     parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
-    parser.add_argument("--transforms", type=str, help="Path to NeRF-style transforms.json.")
-    parser.add_argument("--snapshots_path", type=str, help="Path to snapshots folder. Will be set automatically if not given.")
-    parser.add_argument("--snapshot", type=str, help="Path to a single snapshot (*.msgpack) file.  If given, this will override any n_steps data inside transforms.json")
-
-    parser.add_argument("--frames_json", required=True, type=str, help="Path to a nerf-style transforms.json containing frames to render.")
-    parser.add_argument("--frames_path", required=True, type=str, help="Path to a folder to save the rendered frames.")
-    parser.add_argument("--overwrite_frames", action="store_true", help="If enabled, images in the `--images_path` will be overwritten.  If not enabled, frames that already exist will not be re-rendered.")
+    parser.add_argument("--json", required=True, type=str, help="Path to a nerf-style transforms.json containing frames to render.")
+    parser.add_argument("--frames_path", default="./rendered_frames", type=str, help="Path to a folder to save the rendered frames.")
+    parser.add_argument("--overwrite", action="store_true", help="If enabled, images in the `--images_path` will be overwritten.  If not enabled, frames that already exist will not be re-rendered.")
     
-    parser.add_argument("--samples_per_pixel", type=int, default=16, help="Number of samples per pixel.")
+    parser.add_argument("--samples_per_pixel", type=int, default=1, help="Number of samples per pixel.")
 
     parser.add_argument("--video_out", type=str, help="Path to a video to be exported. Uses ffmpeg to combine frames in order.")
     parser.add_argument("--video_fps", type=str, default="30", help="Use in combination with `--video_out`. Sets the fps of the output video.")
@@ -124,29 +120,6 @@ def generate_snapshots(args: dict, render_data: dict):
     train_proc = sp.Popen(train_cmd, env=os.environ, shell=True, stderr=sys.stderr, stdout=sys.stdout)
     train_proc.wait()
 
-# ngp math utils
-
-def nerf_matrix_to_ngp(nerf_matrix: np.matrix) -> np.matrix:
-    result = np.matrix(nerf_matrix)
-    result[:, 0:3] *= DEFAULT_NGP_SCALE
-    result[:3, 3] = result[:3, 3] * DEFAULT_NGP_SCALE + DEFAULT_NGP_ORIGIN.reshape(3, 1)
-
-    # Cycle axes xyz<-yzx
-    result[:3, :] = np.roll(result[:3, :], -1, axis=0)
-
-    return result
-
-
-# convenience method to convert NeRF point to NGP
-def nerf2ngp(
-        xyz: np.array,
-        origin = DEFAULT_NGP_ORIGIN,
-        scale = DEFAULT_NGP_SCALE
-    ) -> np.array:
-    xyz_cycled = np.array([xyz[1], xyz[2], xyz[0]])
-    return scale * xyz_cycled + origin
-
-
 # deserializers
 
 NGP_MASK_MODES = {
@@ -154,12 +127,73 @@ NGP_MASK_MODES = {
     "subtract": ngp.MaskMode.Subtract,
 }
 
+def deserialize_camera(camera: dict, render_data: dict) -> ngp.RenderCameraProperties:
+    type = camera["type"]
+
+    focal_length = 0.0
+    w = render_data["w"]
+    h = render_data["h"]
+    cam_model = None
+
+    cam_spher_quad = ngp.SphericalQuadrilateralConfig.Zero()
+    cam_quad_hex = ngp.QuadrilateralHexahedronConfig.Zero()
+    aperture_size = 0.0
+    
+    if type == "perspective":
+        focal_length = camera["focal_len"]
+        cam_model = ngp.CameraModel.Perspective
+        aperture_size = camera["aperture"]
+    elif type == "spherical_quadrilateral":
+        cam_model = ngp.CameraModel.SphericalQuadrilateral
+        # TODO: Figure out why we have to pass negative curvature here
+        cam_spher_quad = ngp.SphericalQuadrilateralConfig(
+            width=camera["sw"] * DEFAULT_NGP_SCALE,
+            height=camera["sh"] * DEFAULT_NGP_SCALE,
+            curvature=-camera["c"],
+        )
+    elif type == "quadrilateral_hexahedron":
+        cam_model = ngp.CameraModel.QuadrilateralHexahedron
+
+        [fsw, fsh] = DEFAULT_NGP_SCALE * np.array(camera["fs"])
+        [bsw, bsh] = DEFAULT_NGP_SCALE * np.array(camera["bs"])
+        sl = DEFAULT_NGP_SCALE * camera["sl"]
+        cam_quad_hex = ngp.QuadrilateralHexahedronConfig(
+            front=ngp.Quadrilateral3D(
+                tl=np.array(0.5 * np.array([-fsw, -fsh, sl])),
+                tr=np.array(0.5 * np.array([fsw, -fsh, sl])),
+                bl=np.array(0.5 * np.array([-fsw, fsh, sl])),
+                br=np.array(0.5 * np.array([fsw, fsh, sl])),
+            ), 
+            back=ngp.Quadrilateral3D(
+                tl=np.array(0.5 * np.array([-bsw, -bsh, -sl])),
+                tr=np.array(0.5 * np.array([bsw, -bsh, -sl])),
+                bl=np.array(0.5 * np.array([-bsw, bsh, -sl])),
+                br=np.array(0.5 * np.array([bsw, bsh, -sl])),
+            ),
+        )
+    else:
+        raise Exception(f"Unknown camera type: {type}")
+    
+    m = np.array(camera["m"])[:-1, :]
+
+    return ngp.RenderCameraProperties(
+        transform=m,
+        model=cam_model,
+        focal_length=focal_length,
+        near_distance=camera["near"],
+        aperture_size=aperture_size,
+        focus_z=np.linalg.norm(camera["focus_target"] - m[:3, 3]),
+        spherical_quadrilateral=cam_spher_quad,
+        quadrilateral_hexahedron=cam_quad_hex,
+    )
+
+
 def deserialize_mask(mask: dict) -> list:
     if "mode" not in mask or "shape" not in mask:
         return None
     
     mode = NGP_MASK_MODES[mask["mode"]]
-    transform = nerf_matrix_to_ngp(np.matrix(mask["transform"]))
+    transform = np.array(mask["transform"])
     opacity = mask["opacity"]
     feather = mask["feather"]
     shape = mask["shape"]
@@ -178,18 +212,55 @@ def deserialize_mask(mask: dict) -> list:
     print(f"Warning: Unknown mask shape detected: {shape}")
     return None
 
+def deserialize_nerf(nerf: dict) -> ngp.NerfDescriptor:
+    return ngp.NerfDescriptor(
+        snapshot_path_str=nerf["path"],
+        aabb=ngp.BoundingBox(np.array(nerf["aabb"]["min"]), np.array(nerf["aabb"]["max"])),
+        transform=np.array(nerf["transform"]),
+        modifiers=ngp.RenderModifiers(masks=[deserialize_mask(m) for m in nerf["modifiers"]["masks"]]),
+        opacity=nerf["opacity"],
+    )
+
+def deserialize_render_request(render_data: dict, frame_index: int) -> ngp.RenderRequest:
+    frame = render_data["frames"][frame_index]
+    
+    res = [render_data["w"], render_data["h"]]
+    ds = ngp.DownsampleInfo.MakeFromMip(res, 0)
+    output = ngp.RenderOutputProperties(
+        res,
+        ds,
+        1, #spp
+        ngp.ColorSpace.SRGB,
+        ngp.TonemapCurve.Identity,
+        0.0,
+        np.array([0.0, 0.0, 0.0, 0.0]),
+        False
+    )
+
+    camera = deserialize_camera(frame["camera"], render_data)
+
+    modifiers = ngp.RenderModifiers(
+        masks=[deserialize_mask(m) for m in frame["modifiers"]["masks"]],
+    )
+    nerfs = [deserialize_nerf(n) for n in frame["nerfs"]]
+
+    aabb = ngp.BoundingBox(np.array([-8.0, -8.0, -8.0]), np.array([8.0, 8.0, 8.0]))
+
+    return ngp.RenderRequest(
+        output,
+        camera,
+        modifiers,
+        nerfs,
+        aabb
+    )
+        
+
 # render images
 def render_images(args: dict, render_data: dict):
+    
     # initialize testbed
     testbed = ngp.Testbed(ngp.TestbedMode.Nerf)
     testbed.shall_train = False
-    
-    if args.snapshot:
-        testbed.load_snapshot(args.snapshot)
-    
-    testbed.fov_axis = 0
-    testbed.background_color = [0.0, 0.0, 0.0, 0.0]
-
 
     # global render props
     frame_width = int(render_data["w"])
@@ -201,7 +272,8 @@ def render_images(args: dict, render_data: dict):
     rendered_frame_paths = []
 
     # render each frame via testbed
-    for frame in render_data["frames"]:
+    # enumerate frames
+    for idx, frame in enumerate(render_data["frames"]):
         # prepare output_path
         output_path = get_frame_output_path(args, frame)
         rendered_frame_paths.append(output_path)
@@ -209,79 +281,13 @@ def render_images(args: dict, render_data: dict):
         print(f"Rendering frame: {output_path}")
 
         # check if we can skip rendering this frame
-        if not args.overwrite_frames and output_path.exists():
+        if not args.overwrite and output_path.exists():
             print(f"Frame already exists! Skipping...")
             continue
-            
-        if not args.snapshot and "n_steps" in frame:
-            n_steps = frame["n_steps"]
-            if int(n_steps) != testbed.training_step:
-                snapshot_path = Path(args.snapshots_path) / get_project_snapshot_name(n_steps)
-                testbed.load_snapshot(str(snapshot_path.absolute()))
-
-        # prepare testbed to render this frame
-        
-        if "aabb" in frame:
-            aabb = frame["aabb"]
-            aabb_min = np.array(aabb["min"])
-            aabb_max = np.array(aabb["max"])
-
-            testbed.render_aabb = ngp.BoundingBox(nerf2ngp(aabb_min), nerf2ngp(aabb_max))
-        
-        if "camera" in frame:
-            camera = frame["camera"]
-            type = camera["type"]
-
-            if type == "perspective":
-                testbed.render_camera_model = ngp.CameraModel.Perspective
-                testbed.fov = math.degrees(camera["fov"])
-            elif type == "spherical_quadrilateral":
-                testbed.render_camera_model = ngp.CameraModel.SphericalQuadrilateral
-                # TODO: Figure out why we have to pass negative curvature here
-                testbed.camera_spherical_quadrilateral = ngp.SphericalQuadrilateralConfig(
-                    width=camera["sw"] * DEFAULT_NGP_SCALE,
-                    height=camera["sh"] * DEFAULT_NGP_SCALE,
-                    curvature=-camera["c"],
-                )
-            elif type == "quadrilateral_hexahedron":
-                testbed.render_camera_model = ngp.CameraModel.QuadrilateralHexahedron
-
-                [fsw, fsh] = DEFAULT_NGP_SCALE * np.array(camera["fs"])
-                [bsw, bsh] = DEFAULT_NGP_SCALE * np.array(camera["bs"])
-                sl = DEFAULT_NGP_SCALE * camera["sl"]
-                testbed.camera_quadrilateral_hexahedron = ngp.QuadrilateralHexahedronConfig(
-                    front=ngp.Quadrilateral3D(
-                        tl=np.array(0.5 * np.array([-fsw, -fsh, sl])),
-                        tr=np.array(0.5 * np.array([fsw, -fsh, sl])),
-                        bl=np.array(0.5 * np.array([-fsw, fsh, sl])),
-                        br=np.array(0.5 * np.array([fsw, fsh, sl])),
-                    ), 
-                    back=ngp.Quadrilateral3D(
-                        tl=np.array(0.5 * np.array([-bsw, -bsh, -sl])),
-                        tr=np.array(0.5 * np.array([bsw, -bsh, -sl])),
-                        bl=np.array(0.5 * np.array([-bsw, bsh, -sl])),
-                        br=np.array(0.5 * np.array([bsw, bsh, -sl])),
-                    ),
-                )
-            else:
-                raise Exception(f"Unknown camera type: {type}")
-            
-        
-            if "aperture" in camera:
-                testbed.dof = camera["aperture"]
-            
-            if "focus_target" in camera:
-                testbed.autofocus_target = nerf2ngp(np.array(camera["focus_target"]))
-                testbed.autofocus = True
-            
-            testbed.render_near_distance = camera["near"] * DEFAULT_NGP_SCALE
-            testbed.set_nerf_camera_matrix(np.matrix(camera["m"])[:-1,:])
-        
-        if "masks" in frame:
-            testbed.render_masks = [deserialize_mask(mask) for mask in frame["masks"]]
 
         # render the frame
-        image = testbed.render(frame_width, frame_height, render_spp, True)
+        render_request = deserialize_render_request(render_data, idx)
+        image = testbed.request_nerf_render_sync(render_request)
 
         # save frame as image
         Image.fromarray((image * 255).astype(np.uint8)).convert('RGBA').save(output_path.absolute())
@@ -292,7 +298,7 @@ def get_gpus(args: dict) -> list[str]:
     out, err = proc.communicate()
     data = [line.decode() for line in out.splitlines(False)]
     gpus = [f"{item[4:item.index(':')]}" for item in data]
-    if args.gpus:
+    if args.gpus and args.gpus != "all":
         gpus = [id for id in gpus if id in args.gpus]
 
     return gpus
@@ -302,7 +308,7 @@ if __name__ == "__main__":
     args = parse_args()
     # load render json
     render_data = {}
-    with open(args.frames_json, 'r') as json_file:
+    with open(args.json, 'r') as json_file:
         render_data = json.load(json_file)
 
     if args.batch != None:
@@ -318,8 +324,6 @@ if __name__ == "__main__":
         
     # No --batch flag means we are part of the main process
     else:
-        # First, generate snapshots
-        generate_snapshots(args, render_data)
 
         # split into subprocesses, one for each gpu
         procs = []

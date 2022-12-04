@@ -68,13 +68,13 @@ def train(args: dict):
     testbed.load_training_data(str(Path(args.transforms).absolute()))
     testbed.shall_train = True
     testbed.reload_network_from_file(str(NETWORK_CONFIG_PATH.absolute()))
-    testbed.nerf.training.near_distance = min(frame["near"] for frame in transforms["frames"]) * NGP_SCALE
+    testbed.nerf.training.near_distance = min(frame["near"] for frame in transforms["frames"])# * NGP_SCALE
     testbed.nerf.training.optimize_exposure = True
     testbed.training_batch_size = args.batch_size
-    # testbed.nerf.training.optimize_extrinsics = True
+    testbed.nerf.training.optimize_extrinsics = True
     # testbed.nerf.training.optimize_extra_dims = True
-    # testbed.nerf.training.optimize_focal_length = True
-    # testbed.nerf.training.optimize_distortion = True
+    testbed.nerf.training.optimize_focal_length = True
+    testbed.nerf.training.optimize_distortion = True
 
     # eliminate duplicates
     training_steps = [*set(args.steps)]

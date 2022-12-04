@@ -33,10 +33,10 @@ def parse_args() -> dict:
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
-    parser.add_argument("--max_features", type=int, default=16384,
-                        help="Maximum number of features to extract per image. Default=16384.")
-    parser.add_argument("--max_matches", type=int, default=32768,
-                        help="Maximum number of matches to extract per image pair. Default=32768.")
+    parser.add_argument("--max_features", type=int, default=2<<12,
+                        help="Maximum number of features to extract per image.")
+    parser.add_argument("--max_matches", type=int, default=2<<13,
+                        help="Maximum number of matches to extract per image pair.")
     parser.add_argument("--extract_only", action="store_true",
                         help="Only extract frames from video, do not run COLMAP.")
 

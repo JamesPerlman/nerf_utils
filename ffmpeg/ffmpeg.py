@@ -43,9 +43,11 @@ def extract_frames(
 
     output_frames_path.mkdir(parents=True, exist_ok=True)
 
+    output_image_format = output_frames_path / f"%0{leading_zeroes}d.{img_format}"
+
     os.system(f" \
         ffmpeg \
-            -i \"{input_video_path}\" \
+            -i \"{str(input_video_path.absolute())}\" \
             -r \"{input_video_fps}\" \
             -vsync vfr \
             -vf \"\
@@ -55,5 +57,6 @@ def extract_frames(
                 mpdecimate, \
                 setpts=N/FRAME_RATE/TB \
             \" \
-            \"{output_frames_path}/%0{leading_zeroes}d.{img_format}\" \
+            -start_number 0 \
+            \"{str(output_image_format.absolute())}\" \
     ")

@@ -17,26 +17,28 @@ import pyngp as ngp # noqa
 
 # local imports
 from project import get_project_snapshot_name
+from multi_gpu import split_across_gpus
 
 # constants
-DEFAULT_NGP_SCALE = 1.0 # 0.33
-DEFAULT_NGP_ORIGIN = np.array([0.0, 0.0, 0.0]) # np.array([0.5, 0.5, 0.5])
+DEFAULT_NGP_SCALE = 0.33
+DEFAULT_NGP_ORIGIN = np.array([0.5, 0.5, 0.5])
 
 # convenience method to parse arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Render script")
 
     parser.add_argument("--gpus", type=str, default="all", help="Which GPUs to use for rendering.  Example: \"0,1,2,3\" (Default: \"all\" = use all available GPUs)")
-    parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
     parser.add_argument("--json", required=True, type=str, help="Path to a nerf-style transforms.json containing frames to render.")
     parser.add_argument("--frames_path", default="./rendered_frames", type=str, help="Path to a folder to save the rendered frames.")
     parser.add_argument("--overwrite", action="store_true", help="If enabled, images in the `--images_path` will be overwritten.  If not enabled, frames that already exist will not be re-rendered.")
     
-    parser.add_argument("--samples_per_pixel", type=int, default=1, help="Number of samples per pixel.")
+    parser.add_argument("--spp", type=int, default=1, help="Number of samples per pixel.")
 
     parser.add_argument("--video_out", type=str, help="Path to a video to be exported. Uses ffmpeg to combine frames in order.")
     parser.add_argument("--video_fps", type=str, default="30", help="Use in combination with `--video_out`. Sets the fps of the output video.")
+
+    parser.add_argument("--batch", type=str, default=None, help="For multi-GPU rendering. It is not recommended to use this feature directly.")
 
     return parser.parse_args()
 
@@ -265,7 +267,7 @@ def render_images(args: dict, render_data: dict):
     # global render props
     frame_width = int(render_data["w"])
     frame_height = int(render_data["h"])
-    render_spp = args.samples_per_pixel
+    render_spp = args.spp
 
     # prepare frames directory
     Path(args.frames_path).mkdir(exist_ok=True, parents=True)
@@ -292,17 +294,6 @@ def render_images(args: dict, render_data: dict):
         # save frame as image
         Image.fromarray((image * 255).astype(np.uint8)).convert('RGBA').save(output_path.absolute())
 
-# convenience method to fetch gpu indices via `nvidia-smi`
-def get_gpus(args: dict) -> list[str]:
-    proc = sp.Popen(['nvidia-smi', '--list-gpus'], stdout=sp.PIPE, stderr=sp.PIPE)
-    out, err = proc.communicate()
-    data = [line.decode() for line in out.splitlines(False)]
-    gpus = [f"{item[4:item.index(':')]}" for item in data]
-    if args.gpus and args.gpus != "all":
-        gpus = [id for id in gpus if id in args.gpus]
-
-    return gpus
-
 # main
 if __name__ == "__main__":
     args = parse_args()
@@ -311,50 +302,15 @@ if __name__ == "__main__":
     with open(args.json, 'r') as json_file:
         render_data = json.load(json_file)
 
-    if args.batch != None:
-        print("Starting render on CUDA device: " + os.environ['CUDA_VISIBLE_DEVICES'])
-
-        # only use a portion of the render_data["frames"]
+    def render_fn(proc_idx, n_procs):
         frames = render_data["frames"]
-        [n, d] = [int(s) for s in args.batch.split('/')]
+        n, d = proc_idx, n_procs
         t = len(frames)
 
         render_data["frames"] = [frames[i] for i in range(t) if i % d == n]
         render_images(args, render_data)
-        
-    # No --batch flag means we are part of the main process
-    else:
 
-        # split into subprocesses, one for each gpu
-        procs = []
-        gpus = get_gpus(args)
-        n_gpus = len(gpus)
-
-        # In case there are less images to render than the number of gpus available...
-        n_frames = len(render_data["frames"])
-        if n_frames < n_gpus:
-            gpus = gpus[0:n_frames]
-            n_gpus = n_frames
-
-        print(f"Using {n_gpus} GPU(s).  Rendering images...")
-        
-        i = 0
-        for gpu in gpus:
-            env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = gpu
-            
-            # rerun this command, but with a batch arg
-            cmd = sys.argv.copy()
-            cmd.insert(0, 'python')
-            cmd.extend(["--batch", f"{i}/{n_gpus}"])
-
-            proc = sp.Popen(cmd, env=env, shell=True, stderr=sys.stderr, stdout=sys.stdout)
-            procs.append(proc)
-
-            i = i + 1
-
-        
-        for p in procs:
-            p.wait()
-
+    def export_fn():
         export_video_sequence(args, render_data)
+    
+    split_across_gpus(args, len(render_data["frames"]), render_fn, export_fn)

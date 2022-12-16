@@ -33,13 +33,18 @@ def parse_args() -> dict:
                         help="Maximum number of frames to extract, if given a video as input. Default=250, frames are extracted evenly over the duration of the video.")
     parser.add_argument("--matcher", default="sequential", choices=["exhaustive", "sequential"],
                         help="Which COLMAP matcher to use (sequential or exhaustive)")
-    parser.add_argument("--max_features", type=int, default=2<<12,
+    parser.add_argument("--max_features", type=int, default=2<<13,
                         help="Maximum number of features to extract per image.")
-    parser.add_argument("--max_matches", type=int, default=2<<13,
+    parser.add_argument("--max_matches", type=int, default=2<<14,
                         help="Maximum number of matches to extract per image pair.")
     parser.add_argument("--extract_only", action="store_true",
                         help="Only extract frames from video, do not run COLMAP.")
-
+    parser.add_argument("--ba_iters", type=int, default=100,
+                        help="Number of COLMAP bundle adjustment iterations.")
+    parser.add_argument("--mapper", default="default", choices=["default", "hierarchical"],
+                        help="Which COLMAP mapper to use (default or hierarchical).")
+    parser.add_argument("--mode", default="concat", choices=["animate", "combine", "concat"],
+                        help="For videos, which mode to use when processing multiple videos.")
     return parser.parse_args()
 
 # Thank you https://stackoverflow.com/a/23689767/892990
@@ -69,32 +74,36 @@ def parse_project(args) -> dict:
     project.masks_path = project.path / "masks"
     project.colmap_db_path = project.path / "colmap.db"
     project.colmap_sparse_path = project.path / "colmap_sparse"
+    project.output_model_path = project.colmap_sparse_path / "0"
     project.colmap_text_path = project.path / "colmap_text"
     project.transforms_json_path = project.path / "transforms.json"
     project.done_path = project.path / "steps.done"
     project.metadata_dict_path = project.path / "metadata.json"
+    project.manifest_path = project.path / "manifest.json"
 
     project.use_masks = project.masks_path.exists()
         
     # check for images
-    if not project.images_path.is_dir():
-        def vid_path(name: str) -> Path:
-            return project.path / name
-        
-        if project.video_path is None:
-            project.video_path = vid_path("video.mov")
-        
-        if not project.video_path.exists():
-            print(f"Video path \"{project.video_path}\" not found...")
-            project.video_path = vid_path("video.mp4")
-            print(f"Trying {project.video_path}...")
-        if not project.video_path.exists():
-            print(f"Video path \"{project.video_path}\" not found...")
-            project.video_path = vid_path("videos")
-            print(f"Trying {project.video_path}...")
-        if not project.video_path.exists():
-            print(f"Video path \"{project.video_path}\" not found...")
-            print("Unable to find video source in this project.")
+    def vid_path(name: str) -> Path:
+        return project.path / name
+    
+    if project.video_path is None:
+        project.video_path = vid_path("video.mov")
+    
+    if not project.video_path.exists():
+        print(f"Video path \"{project.video_path}\" not found...")
+        project.video_path = vid_path("video.mp4")
+        print(f"Trying {project.video_path}...")
+    if not project.video_path.exists():
+        print(f"Video path \"{project.video_path}\" not found...")
+        project.video_path = vid_path("videos")
+        print(f"Trying {project.video_path}...")
+    if not project.video_path.exists():
+        print(f"Video path \"{project.video_path}\" not found...")
+        print("Unable to find video source in this project.")
+        project.video_path = None
+    if project.images_path.exists():
+        print(f"Using existing images found in {project.images_path}...")
 
     # TODO: make sure input_video_path is an actual video
 
@@ -135,11 +144,10 @@ def get_image_sharpness(image_path):
 
 # extract frames step
 
-def extract_frames(args):
-    
-    project = parse_project(args)
+def extract_frames(args, project):
 
     if project.video_path is None:
+        args.max_frames = len(list(project.images_path.glob("*.*")))
         return
 
     # figure out if this step is done already
@@ -155,7 +163,7 @@ def extract_frames(args):
     project.images_path.mkdir(exist_ok=True, parents=True)
 
     def extract_frames_from_video(video_path: Path, start_frame: int = 0) -> list[Path]:
-        cap = cv2.VideoCapture(project.video_path.as_posix())
+        cap = cv2.VideoCapture(video_path.as_posix())
 
         img_ext = "png"
         padding = 4
@@ -184,7 +192,7 @@ def extract_frames(args):
             if f in keep_indices:
                 _, img = cap.retrieve()
                 this_img_path = img_path(i)
-                print(f"Extracting frame {i} of {args.max_frames} ({f} / {num_video_frames}): {this_img_path}...")
+                print(f"[{video_path.name}] Extracting frame {i} of {args.max_frames} ({f} / {num_video_frames}): {this_img_path}...")
                 cv2.imwrite(this_img_path, img)
                 all_img_paths.append(this_img_path)
                 i += 1
@@ -205,36 +213,36 @@ def extract_frames(args):
         }
 
     metadata_dict: dict = {}
+    manifest_data = {}
     # if video_path is a directory, we need to run this on multiple files
     if project.video_path.is_dir():
         # TODO: Make sure that all these files are videos
-        i = 0
-        for video_path in project.video_path.iterdir():
+        for (i, video_path) in enumerate(project.video_path.iterdir()):
+            print(f"Extracting frames from {video_path.name}...")
             img_paths = extract_frames_from_video(video_path, i * args.max_frames)
             metadata_dict = {
                 **metadata_dict,
                 **make_metadata_dict(keys=img_paths, camera_id=i)
             }
-            i += 1
+            manifest_data[video_path.stem] = [Path(p).name for p in img_paths]
 
     else:
         img_paths = extract_frames_from_video(project.video_path)
         metadata_dict = make_metadata_dict(keys=img_paths, camera_id=0)
+        manifest_data[project.video_path.stem] = [Path(p).name for p in img_paths]
     
     with open(project.metadata_dict_path, 'w+') as f:
         json.dump(metadata_dict, f, indent=2)
     
+    with open(project.manifest_path, 'w+') as f:
+        json.dump(manifest_data, f, indent=2)
+    
     os.system(f"touch {path2str(extract_frames_done_path)}")
 
 
-def run_colmap(args):
+def run_colmap(args, project):
 
-    project = parse_project(args)
-
-    # TODO: Use Project class
-
-    colmap_feature_extractor_done_path = project.done_path / \
-        "step.colmap_feature_extractor.done"
+    colmap_feature_extractor_done_path = project.done_path / "step.colmap_feature_extractor.done"
     if not colmap_feature_extractor_done_path.exists():
         os_system(f"\
             colmap feature_extractor \
@@ -265,54 +273,86 @@ def run_colmap(args):
     colmap_mapper_done_path = project.done_path / "step.colmap_mapper.done"
     if not colmap_mapper_done_path.exists():
         # TODO: research --Mapper.ba_global_use_pba
-        os_system(f"\
-            colmap mapper \
-                --database_path {path2str(project.colmap_db_path)} \
-                --image_path {path2str(project.images_path)} \
-                --output_path {path2str(project.colmap_sparse_path)} \
-        ")
+        if args.mapper == "hierarchical":
+            os_system(f"\
+                colmap hierarchical_mapper \
+                    --database_path {path2str(project.colmap_db_path)} \
+                    --image_path {path2str(project.images_path)} \
+                    --output_path {path2str(project.colmap_sparse_path)} \
+                    --Mapper.ba_global_use_pba 1 \
+                    --image_overlap {args.max_frames} \
+                    --leaf_max_num_images {args.max_frames} \
+            ")
+        else:
+            os_system(f"\
+                colmap mapper \
+                    --database_path {path2str(project.colmap_db_path)} \
+                    --image_path {path2str(project.images_path)} \
+                    --output_path {path2str(project.colmap_sparse_path)} \
+                    --Mapper.ba_global_use_pba 1 \
+            ")
 
         os_system(f"touch {path2str(colmap_mapper_done_path)}")
+
+    # colmap_model_merger_done_path = project.done_path / "step.colmap_model_merger.done"
+    # if not colmap_model_merger_done_path.exists():
+    #     model_paths = [p for p in project.colmap_sparse_path.iterdir() if p.is_dir()]
+    #     if len(model_paths) > 1:
+    #         for (i, model_path) in enumerate(model_paths):
+    #             input_path1 = model_path
+    #             input_path2 = model_paths[i + 1]
+    #             if i > 0:
+    #                 input_path2 = project.output_model_path
+    #             os_system(f"\
+    #                 colmap model_merger \
+    #                     --input_path1 {path2str(input_path1)} \
+    #                     --input_path2 {path2str(input_path2)} \
+    #                     --output_path {path2str(project.output_model_path)} \
+    #             ")
+    #     else:
+    #         # copy model 0 to merged
+    #         project.output_model_path.mkdir(parents=True, exist_ok=True)
+    #         shutil.copytree(model_paths[0], project.output_model_path)
+
+    #     os_system(f"touch {path2str(colmap_model_merger_done_path)}")
 
     colmap_bundle_adjuster_done_path = project.done_path / "step.colmap_bundle_adjuster.done"
     if not colmap_bundle_adjuster_done_path.exists():
         os_system(f"\
             colmap bundle_adjuster \
-                --input_path {path2str(project.colmap_sparse_path / '0')} \
-                --output_path {path2str(project.colmap_sparse_path / '0')} \
+                --input_path {path2str(project.output_model_path)} \
+                --output_path {path2str(project.output_model_path)} \
                 --BundleAdjustment.refine_principal_point 1 \
+                --BundleAdjustment.max_num_iterations {args.ba_iters} \
+                --BundleAdjustment.max_linear_solver_iterations {2 * args.ba_iters} \
         ")
 
         os_system(f"touch {path2str(colmap_bundle_adjuster_done_path)}")
 
-    colmap_model_orientation_aligner_done_path = project.done_path / \
-        "step.colmap_model_orientation_aligner.done"
+    colmap_model_orientation_aligner_done_path = project.done_path / "step.colmap_model_orientation_aligner.done"
     if not colmap_model_orientation_aligner_done_path.exists():
         os_system(f"\
             colmap model_orientation_aligner \
                 --image_path {path2str(project.images_path)} \
-                --input_path {path2str(project.colmap_sparse_path / '0')} \
-                --output_path {path2str(project.colmap_sparse_path / '0')} \
+                --input_path {path2str(project.output_model_path)} \
+                --output_path {path2str(project.output_model_path)} \
                 --method IMAGE-ORIENTATION \
         ")
-        os_system(
-            f"touch {path2str(colmap_model_orientation_aligner_done_path)}")
+        os_system(f"touch {path2str(colmap_model_orientation_aligner_done_path)}")
 
     # TODO: Skip if already done
     colmap_model_converter_done_path = project.done_path / "step.colmap_model_converter.done"
     if not colmap_model_converter_done_path.exists():
         os_system(f"\
             colmap model_converter \
-                --input_path {path2str(project.colmap_sparse_path / '0')} \
+                --input_path {path2str(project.output_model_path)} \
                 --output_path {path2str(project.colmap_text_path)} \
                 --output_type TXT \
         ")
         os_system(f"touch {path2str(colmap_model_converter_done_path)}")
 
 
-def save_transforms(args):
-
-    project = parse_project(args)
+def save_transforms(args, project):
     
     if project.transforms_json_path.exists():
         print(f"{project.transforms_json_path} already exists! Skipping...")
@@ -399,27 +439,52 @@ def save_transforms(args):
                     # "sharpness" : get_image_sharpness(image_path_str),
                     "transform_matrix" : c2w.tolist(),
                 })
-
-                print(f"Using image {img_path_str}...")
+        print(f"Using {i} images...")
     
     num_frames = len(out["frames"])
 
     print(f"Sorting transforms by image names...")
     out["frames"] = sorted(out["frames"], key=lambda f: Path(f["file_path"]).stem)
 
-    print(f"Writing transforms ({num_frames} frames) to: {project.transforms_json_path.absolute()}")
-    with open(str(project.transforms_json_path.absolute()), "w+") as outfile:
-        json.dump(out, outfile, indent=2)
+    if project.manifest_path.exists():
+        manifest_data = []
+        with open(project.manifest_path, 'r') as f:
+            manifest_data = json.load(f)
+        
+        
+        for video_id in manifest_data:
+            video_transforms = {
+                **out,
+                "frames": []
+            }
+            img_names = manifest_data[video_id]
+            # get frames that match img_paths
+            for frame in out["frames"]:
+                if Path(frame["file_path"]).name in img_names:
+                    video_transforms["frames"].append(frame)    
+
+            transforms_path = project.transforms_json_path.parent / f"{video_id}.transforms.json"
+            print(f"Writing transforms to {transforms_path.absolute()}...")
+            with open(transforms_path, 'w+') as f:
+                json.dump(video_transforms, f, indent=2)
+            
+    else:
+        print(f"Writing transforms ({num_frames} frames) to: {project.transforms_json_path.absolute()}")
+        with open(str(project.transforms_json_path.absolute()), "w+") as outfile:
+            json.dump(out, outfile, indent=2)
 
 if __name__ == "__main__":
     args = parse_args()
-    extract_frames(args)
+    
+    project = parse_project(args)
+
+    extract_frames(args, project)
 
     if args.extract_only:
         exit(0)
     
-    run_colmap(args)
+    run_colmap(args, project)
 
-    save_transforms(args)
+    save_transforms(args, project)
 
     print("All done!")

@@ -423,8 +423,9 @@ def save_transforms(args, project):
             if  i % 2 == 1:
                 fields = line.split(" ")
                 img_path_str = f"./{project.images_path.name}/{fields[9]}"
+                img_path_absolute = (project.images_path / fields[9]).absolute()
                 
-                if not Path(img_path_str).exists():
+                if not img_path_absolute.exists():
                     continue
 
                 qvec = np.array(tuple(map(float, fields[1:5])))

@@ -440,7 +440,7 @@ def save_transforms(args, project):
                     # "sharpness" : get_image_sharpness(image_path_str),
                     "transform_matrix" : c2w.tolist(),
                 })
-        print(f"Using {i} images...")
+        print(f"Using {i/2} images...")
     
     num_frames = len(out["frames"])
 

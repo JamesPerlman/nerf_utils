@@ -400,6 +400,13 @@ def save_transforms(args, project):
         [0, 0, -1, 0],
         [0, 0, 0, 1]
     ])
+    
+    rot_mat = np.array([
+        [0, 0, -1, 0],
+        [1, 0, 0, 0],
+        [0, -1, 0, 0],
+        [0, 0, 0, 1]
+    ])
 
     metadata_dict: dict = None
     if project.metadata_dict_path.exists():
@@ -434,6 +441,7 @@ def save_transforms(args, project):
                 t = tvec.reshape([3,1])
                 m = np.concatenate([np.concatenate([R, t], 1), m3], 0)
                 c2w = np.matmul(np.linalg.inv(m), flip_mat)
+                c2w = np.matmul(c2w, rot_mat)
 
                 out["frames"].append({
                     "file_path" : img_path_str,

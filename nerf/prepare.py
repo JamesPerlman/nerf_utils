@@ -441,7 +441,7 @@ def save_transforms(args, project):
                 t = tvec.reshape([3,1])
                 m = np.concatenate([np.concatenate([R, t], 1), m3], 0)
                 c2w = np.matmul(np.linalg.inv(m), flip_mat)
-                c2w = np.matmul(c2w, rot_mat)
+                c2w = np.matmul(rot_mat, c2w)
 
                 out["frames"].append({
                     "file_path" : img_path_str,

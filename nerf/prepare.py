@@ -87,23 +87,26 @@ def parse_project(args) -> dict:
     def vid_path(name: str) -> Path:
         return project.path / name
     
-    if project.video_path is None:
-        project.video_path = vid_path("video.mov")
     
-    if not project.video_path.exists():
-        print(f"Video path \"{project.video_path}\" not found...")
-        project.video_path = vid_path("video.mp4")
-        print(f"Trying {project.video_path}...")
-    if not project.video_path.exists():
-        print(f"Video path \"{project.video_path}\" not found...")
-        project.video_path = vid_path("videos")
-        print(f"Trying {project.video_path}...")
-    if not project.video_path.exists():
-        print(f"Video path \"{project.video_path}\" not found...")
-        print("Unable to find video source in this project.")
-        project.video_path = None
     if project.images_path.exists():
         print(f"Using existing images found in {project.images_path}...")
+        project.video_path = None
+    else:
+        project.video_path = vid_path("video.mov")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            project.video_path = vid_path("video.mp4")
+            print(f"Trying {project.video_path}...")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            project.video_path = vid_path("videos")
+            print(f"Trying {project.video_path}...")
+        if not project.video_path.exists():
+            print(f"Video path \"{project.video_path}\" not found...")
+            print("Unable to find video source in this project.")
+            project.video_path = None
+        if project.video_path is None:
+            exit()
 
     # TODO: make sure input_video_path is an actual video
 

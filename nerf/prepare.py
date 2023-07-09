@@ -448,7 +448,6 @@ def save_transforms(args, project):
 
                 out["frames"].append({
                     "file_path" : img_path_str,
-                    # "sharpness" : get_image_sharpness(image_path_str),
                     "transform_matrix" : c2w.tolist(),
                 })
         print(f"Using {i/2} images...")

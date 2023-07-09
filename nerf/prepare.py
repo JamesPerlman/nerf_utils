@@ -249,14 +249,14 @@ def run_colmap(args, project):
     if not colmap_feature_extractor_done_path.exists():
         os_system(f"\
             colmap feature_extractor \
+                --database_path {path2str(project.colmap_db_path)} \
+                --image_path {path2str(project.images_path)} \
                 --ImageReader.camera_model OPENCV \
                 --ImageReader.single_camera 1 \
                 {f'--ImageReader.mask_path {path2str(project.masks_path)}' if project.use_masks else ''} \
                 --SiftExtraction.estimate_affine_shape=true \
                 --SiftExtraction.domain_size_pooling=true \
                 --SiftExtraction.max_num_features={args.max_features} \
-                --database_path {path2str(project.colmap_db_path)} \
-                --image_path {path2str(project.images_path)} \
         ")
 
         os_system(f"touch {path2str(colmap_feature_extractor_done_path)}")
@@ -265,9 +265,9 @@ def run_colmap(args, project):
     if not colmap_matcher_done_path.exists():
         os_system(f"\
             colmap {args.matcher}_matcher \
+                --database_path {path2str(project.colmap_db_path)} \
                 --SiftMatching.guided_matching=true \
                 {f'--SiftMatching.max_num_matches {args.max_matches}' if args.max_matches is not None else ''} \
-                --database_path {path2str(project.colmap_db_path)} \
         ")
         # {args.matcher == 'sequential' and '--SequentialMatching.loop_detection=1' or ''} \
 
@@ -403,7 +403,7 @@ def save_transforms(args, project):
         [0, 0, -1, 0],
         [0, 0, 0, 1]
     ])
-    
+
     rot_mat = np.array([
         [0, 0, -1, 0],
         [1, 0, 0, 0],

@@ -139,12 +139,6 @@ def qvec2rotmat(qvec):
         ]
     ])
 
-def get_image_sharpness(image_path):
-    image = cv2.imread(image_path)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    variance_of_laplacian = cv2.Laplacian(gray, cv2.CV_64F).var()
-    return variance_of_laplacian
-
 # extract frames step
 
 def extract_frames(args, project):
